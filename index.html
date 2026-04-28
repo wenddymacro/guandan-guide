@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>掼蛋 · 完整互动指南</title>
+<meta name="description" content="掼蛋完整互动指南：牌型讲解、组牌练习、速度挑战、模拟对局、真实四人AI对局。">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>*{box-sizing:border-box;margin:0;padding:0}html{scroll-behavior:smooth}body{background:#FAF6EE;font-size:16px}::-webkit-scrollbar{display:none}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 共享常量与工具函数
+// ═══════════════════════════════════════════════════════════════════════════════
+const SUITS = { H:"♥", D:"♦", S:"♠", C:"♣" };
+const isRed = s => s==="H"||s==="D";
+const ALL_RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"];
+const LEVEL = "2";
+const RANK_BASE = {2:2,3:3,4:4,5:5,6:6,7:7,8:8,9:9,10:10,J:11,Q:12,K:13,A:14};
+
+function cVal(c) {
+  if(c.rank==="BJ") return 17;
+  if(c.rank==="SJ") return 16;
+  if(c.rank===LEVEL) return 15;
+  return RANK_BASE[c.rank]||0;
+}
+
+// ─── 牌型识别（统一版，含 type/count/power） ────────────────────────────────
+function detectHand(cards) {
+  if(!cards||cards.length===0) return null;
+  const n=cards.length;
+  const jk=cards.filter(c=>c.rank==="BJ"||c.rank==="SJ");
+  if(jk.length===4) return {name:"天王炸",type:"jokerbomb",power:9999999,isBomb:true,count:4};
+  const vals=cards.map(cVal);
+  const sorted=[...vals].sort((a,b)=>a-b);
+  const cnt={};vals.forEach(v=>cnt[v]=(cnt[v]||0)+1);
+  const uniq=[...new Set(sorted)];
+  const cntArr=Object.values(cnt).sort((a,b)=>b-a);
+  const max=sorted[n-1];
+  const suits=cards.map(c=>c.suit);
+  if(n>=5&&suits.every(s=>s===suits[0])&&suits[0]!==""&&uniq.length===n&&max-sorted[0]===n-1)
+    return {name:`同花顺(${n}张)`,type:"sf",power:5000000+n*10000+max,isBomb:true,count:n};
+  if(n>=4&&cntArr[0]===n)
+    return {name:`${n}张炸弹`,type:"bomb",power:1000000+n*1000+max,isBomb:true,count:n};
+  if(n===1) return {name:"单张",type:"single",power:max,isBomb:false,count:1};
+  if(n===2&&cntArr[0]===2) return {name:"对子",type:"pair",power:max,isBomb:false,count:2};
+  if(n===3&&cntArr[0]===3) return {name:"三张",type:"triple",power:max,isBomb:false,count:3};
+  if(n===5&&cntArr[0]===3&&cntArr[1]===2){
+    const tv=uniq.find(v=>cnt[v]===3);
+    return {name:"三带二",type:"fullhouse",power:tv,isBomb:false,count:5};
+  }
+  if(n>=5&&uniq.length===n&&max-sorted[0]===n-1)
+    return {name:`顺子(${n}张)`,type:"straight",power:max,isBomb:false,count:n};
+  if(n===4&&cntArr[0]===2&&cntArr[1]===2){
+    const ps=uniq.sort((a,b)=>a-b);
+    if(ps[1]-ps[0]===1) return {name:"二连对",type:"dpair",power:ps[1],isBomb:false,count:4};
+  }
+  if(n===6&&cntArr.every(c=>c===2)){
+    const ps=uniq.sort((a,b)=>a-b);
+    if(ps[1]-ps[0]===1&&ps[2]-ps[1]===1) return {name:"三连对",type:"tpair",power:ps[2],isBomb:false,count:6};
+  }
+  return null;
+}
+
+function canBeat(play,table) {
+  if(!table) return true;
+  if(play.isBomb&&!table.isBomb) return true;
+  if(play.isBomb&&table.isBomb) return play.power>table.power;
+  if(play.type!==table.type||play.count!==table.count) return false;
+  return play.power>table.power;
+}
+
+// ─── 发牌（真实对局用，每张牌有唯一 id） ──────────────────────────────────────
+function buildDeck() {
+  const d=[];let uid=0;
+  ["H","D","S","C"].forEach(s=>ALL_RANKS.forEach(r=>{
+    d.push({rank:r,suit:s,id:uid++});
+    d.push({rank:r,suit:s,id:uid++});
+  }));
+  d.push({rank:"BJ",suit:"",id:uid++},{rank:"BJ",suit:"",id:uid++});
+  d.push({rank:"SJ",suit:"",id:uid++},{rank:"SJ",suit:"",id:uid++});
+  for(let i=d.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[d[i],d[j]]=[d[j],d[i]];}
+  return d;
+}
+function dealCards() {
+  const d=buildDeck();
+  return [d.slice(0,27),d.slice(27,54),d.slice(54,81),d.slice(81,108)]
+    .map(h=>[...h].sort((a,b)=>cVal(a)-cVal(b)));
+}
+
+// ─── 练习发牌（无 id，10张） ────────────────────────────────────────────────
+function dealPractice() {
+  const d=[];
+  ["H","D","S","C"].forEach(s=>ALL_RANKS.forEach(r=>d.push({rank:r,suit:s})));
+  d.push({rank:"BJ",suit:""},{rank:"BJ",suit:""},{rank:"SJ",suit:""},{rank:"SJ",suit:""});
+  for(let i=d.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[d[i],d[j]]=[d[j],d[i]];}
+  return d.slice(0,10).sort((a,b)=>cVal(a)-cVal(b));
+}
+
+// ─── AI 逻辑 ────────────────────────────────────────────────────────────────
+const TEAM=[0,1,0,1];
+function genPlays(hand) {
+  const plays=[];
+  const wv=hand.map(c=>({...c,v:cVal(c)}));
+  const byV={};
+  wv.forEach(c=>{if(!byV[c.v])byV[c.v]=[];byV[c.v].push(c);});
+  const svs=Object.keys(byV).map(Number).sort((a,b)=>a-b);
+  wv.forEach(c=>plays.push({cards:[c],type:"single",power:c.v,isBomb:false,count:1,name:"单张"}));
+  svs.forEach(v=>{if(byV[v].length>=2)plays.push({cards:byV[v].slice(0,2),type:"pair",power:v,isBomb:false,count:2,name:"对子"});});
+  svs.forEach(v=>{if(byV[v].length>=3)plays.push({cards:byV[v].slice(0,3),type:"triple",power:v,isBomb:false,count:3,name:"三张"});});
+  svs.forEach(v=>{const c=byV[v];for(let sz=4;sz<=c.length;sz++)plays.push({cards:c.slice(0,sz),type:"bomb",power:1000000+sz*1000+v,isBomb:true,count:sz,name:`${sz}张炸弹`});});
+  const jk=hand.filter(c=>c.rank==="BJ"||c.rank==="SJ");
+  if(jk.length===4)plays.push({cards:jk,type:"jokerbomb",power:9999999,isBomb:true,count:4,name:"天王炸"});
+  svs.filter(v=>byV[v].length>=3).forEach(tv=>{
+    svs.filter(v=>byV[v].length>=2&&v!==tv).forEach(pv=>{
+      plays.push({cards:[...byV[tv].slice(0,3),...byV[pv].slice(0,2)],type:"fullhouse",power:tv,isBomb:false,count:5,name:"三带二"});
+    });
+  });
+  for(let i=0;i<svs.length-1;i++){
+    if(byV[svs[i]].length>=2&&byV[svs[i+1]].length>=2&&svs[i+1]-svs[i]===1)
+      plays.push({cards:[...byV[svs[i]].slice(0,2),...byV[svs[i+1]].slice(0,2)],type:"dpair",power:svs[i+1],isBomb:false,count:4,name:"二连对"});
+  }
+  for(let i=0;i<svs.length-2;i++){
+    if(byV[svs[i]].length>=2&&byV[svs[i+1]].length>=2&&byV[svs[i+2]].length>=2&&svs[i+1]-svs[i]===1&&svs[i+2]-svs[i+1]===1)
+      plays.push({cards:[...byV[svs[i]].slice(0,2),...byV[svs[i+1]].slice(0,2),...byV[svs[i+2]].slice(0,2)],type:"tpair",power:svs[i+2],isBomb:false,count:6,name:"三连对"});
+  }
+  const sv=svs.filter(v=>v<15);
+  for(let s=0;s<sv.length;s++){
+    const seq=[sv[s]];
+    for(let e=s+1;e<sv.length;e++){
+      if(sv[e]-sv[e-1]===1)seq.push(sv[e]);else break;
+      if(seq.length>=5)plays.push({cards:seq.map(v=>byV[v][0]),type:"straight",power:seq[seq.length-1],isBomb:false,count:seq.length,name:`顺子(${seq.length}张)`});
+    }
+  }
+  ["H","D","S","C"].forEach(suit=>{
+    const sc=wv.filter(c=>c.suit===suit&&c.v<15);
+    const sv2=[...new Set(sc.map(c=>c.v))].sort((a,b)=>a-b);
+    for(let s=0;s<sv2.length;s++){
+      const seq=[sv2[s]];
+      for(let e=s+1;e<sv2.length;e++){
+        if(sv2[e]-sv2[e-1]===1)seq.push(sv2[e]);else break;
+        if(seq.length>=5){
+          const c=seq.map(v=>sc.find(x=>x.v===v));
+          plays.push({cards:c,type:"sf",power:5000000+seq.length*10000+seq[seq.length-1],isBomb:true,count:seq.length,name:`同花顺(${seq.length}张)`});
+        }
+      }
+    }
+  });
+  return plays;
+}
+
+function aiDecide(hand,table,player) {
+  const plays=genPlays(hand);
+  if(table&&TEAM[table.owner]===TEAM[player]&&hand.length>4) return null;
+  if(!table){
+    const singles=plays.filter(p=>p.type==="single"&&!p.isBomb).sort((a,b)=>a.power-b.power);
+    return singles[0]||null;
+  }
+  const valid=plays.filter(p=>canBeat(p,table));
+  if(!valid.length) return null;
+  const nonBombs=valid.filter(p=>!p.isBomb);
+  if(nonBombs.length) return nonBombs.sort((a,b)=>a.power-b.power)[0];
+  return valid.sort((a,b)=>a.power-b.power)[0];
+}
+
+function nextActive(g,from) {
+  let n=(from+1)%4,tries=0;
+  while(g.done.includes(n)&&tries<4){n=(n+1)%4;tries++;}
+  return n;
+}
+function applyPlay(g,player,aiPlay) {
+  const ids=new Set(aiPlay.cards.map(c=>c.id));
+  const newHands=g.hands.map((h,i)=>i===player?h.filter(c=>!ids.has(c.id)):h);
+  let newDone=[...g.done];
+  if(newHands[player].length===0&&!newDone.includes(player)) newDone=[...newDone,player];
+  const newTable={...aiPlay,owner:player};
+  const newLog=[{player,cards:aiPlay.cards,name:aiPlay.name,pass:false},...g.log.slice(0,11)];
+  const ng={...g,hands:newHands,table:newTable,passes:0,done:newDone,log:newLog,leader:player};
+  if(newDone.length>=3){
+    const last=[0,1,2,3].find(p=>!newDone.includes(p));
+    const fd=newDone.length<4?[...newDone,last]:newDone;
+    return {...ng,done:fd,phase:"done"};
+  }
+  return {...ng,cur:nextActive(ng,player)};
+}
+function applyPass(g,player) {
+  const newLog=[{player,cards:[],name:"Pass",pass:true},...g.log.slice(0,11)];
+  const active=[0,1,2,3].filter(p=>!g.done.includes(p));
+  const newPasses=g.passes+1;
+  if(newPasses>=active.length-1){
+    const owner=g.table?.owner??player;
+    return {...g,table:null,passes:0,leader:owner,cur:owner,log:newLog};
+  }
+  return {...g,passes:newPasses,log:newLog,cur:nextActive(g,player)};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 共享 UI 组件
+// ═══════════════════════════════════════════════════════════════════════════════
+function Card({rank,suit,selected,onClick,small,faceDown,glow,dim}) {
+  const red=isRed(suit);
+  const isJoker=rank==="BJ"||rank==="SJ";
+  const isBig=rank==="BJ";
+  const w=small?46:68,h=small?64:96;
+  return (
+    <div onClick={onClick} style={{
+      width:w,height:h,borderRadius:small?5:9,flexShrink:0,userSelect:"none",
+      border:selected?"2.5px solid #C0392B":glow?"2px solid #C9A84C":"1px solid #ddd",
+      background:faceDown?"linear-gradient(135deg,#1a1410,#3a2010)":isJoker?(isBig?"linear-gradient(135deg,#fff8e1,#ffe0d0)":"linear-gradient(135deg,#f0f0ff,#dde0ff)"):"white",
+      boxShadow:selected?"0 0 0 3px rgba(192,57,43,0.25),0 6px 16px rgba(0,0,0,0.18)":glow?"0 0 0 3px rgba(201,168,76,0.35)":"0 2px 8px rgba(0,0,0,0.1)",
+      cursor:onClick?"pointer":"default",
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"space-between",
+      padding:small?"4px":"6px 7px",
+      transition:"transform .15s,box-shadow .15s,opacity .15s",
+      transform:selected?"translateY(-10px)":dim?"scale(0.94)":"none",
+      opacity:dim?0.45:1,position:"relative",
+    }}>
+      {faceDown
+        ? <div style={{position:"absolute",inset:3,borderRadius:3,border:"1px solid rgba(255,255,255,0.08)",backgroundImage:"repeating-linear-gradient(45deg,rgba(255,255,255,0.03) 0,rgba(255,255,255,0.03) 1px,transparent 0,transparent 50%)",backgroundSize:"6px 6px"}}/>
+        : isJoker
+          ? (<>
+              <span style={{fontSize:small?10:14,fontWeight:700,color:isBig?"#C0392B":"#1A3A6B",alignSelf:"flex-start",lineHeight:1}}>{isBig?"大":"小"}</span>
+              <span style={{fontSize:small?20:28}}>🃏</span>
+              <span style={{fontSize:small?10:14,fontWeight:700,color:isBig?"#C0392B":"#1A3A6B",alignSelf:"flex-end",lineHeight:1,transform:"rotate(180deg)"}}>王</span>
+            </>)
+          : (<>
+              <div style={{alignSelf:"flex-start",color:red?"#C0392B":"#1A1410",lineHeight:1}}>
+                <div style={{fontSize:small?11:15,fontWeight:700}}>{rank}</div>
+                <div style={{fontSize:small?9:12}}>{SUITS[suit]}</div>
+              </div>
+              <div style={{fontSize:small?16:26,color:red?"#C0392B":"#1A1410"}}>{SUITS[suit]}</div>
+              <div style={{alignSelf:"flex-end",transform:"rotate(180deg)",color:red?"#C0392B":"#1A1410",lineHeight:1}}>
+                <div style={{fontSize:small?11:15,fontWeight:700}}>{rank}</div>
+                <div style={{fontSize:small?9:12}}>{SUITS[suit]}</div>
+              </div>
+            </>)
+      }
+    </div>
+  );
+}
+
+function CardRow({cards,small,gap=6,selected=[],onToggle}) {
+  return (
+    <div style={{display:"flex",gap,flexWrap:"wrap",alignItems:"flex-end"}}>
+      {cards.map((c,i)=>(
+        <Card key={c.id||i} {...c} small={small}
+          selected={selected.includes(i)}
+          onClick={onToggle?()=>onToggle(i):undefined}/>
+      ))}
+    </div>
+  );
+}
+
+function SL({n}) {
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+      <span style={{fontSize:10,fontWeight:600,letterSpacing:4,color:"#C9A84C",textTransform:"uppercase",whiteSpace:"nowrap"}}>Part {String(n).padStart(2,"0")}</span>
+      <span style={{flex:1,height:1,background:"linear-gradient(to right,rgba(201,168,76,0.3),transparent)"}}/>
+    </div>
+  );
+}
+
+function Pill({children,bomb}) {
+  return (
+    <span style={{fontSize:10,background:bomb?"rgba(201,168,76,0.15)":"rgba(26,107,60,0.08)",color:bomb?"#8B6914":"#1A6B3C",padding:"2px 8px",borderRadius:10,fontWeight:600}}>
+      {children}
+    </span>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 1: 概览
+// ═══════════════════════════════════════════════════════════════════════════════
+function OverviewSection() {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:14}}>
+      {[
+        {icon:"🃏",t:"两副牌",d:"108张，每人27张，留8张底牌"},
+        {icon:"👥",t:"两队对抗",d:"对角线为队友，配合比个人更重要"},
+        {icon:"📈",t:"升级制胜",d:"胜者升1-3级，最先升到A级赢"},
+        {icon:"⭐",t:"级牌万能",d:"红桃级牌可凑顺子，价值极高"},
+      ].map((c,i)=>(
+        <div key={i} style={{background:"white",border:"1px solid rgba(201,168,76,0.22)",borderRadius:12,padding:22,transition:"transform .2s,box-shadow .2s"}}
+          onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-3px)";e.currentTarget.style.boxShadow="0 10px 28px rgba(0,0,0,0.07)";}}
+          onMouseLeave={e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="";}}>
+          <div style={{fontSize:32,marginBottom:12}}>{c.icon}</div>
+          <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:17,fontWeight:600,marginBottom:7}}>{c.t}</div>
+          <div style={{fontSize:14,color:"#7A6E64",lineHeight:1.6}}>{c.d}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 2: 牌型一览
+// ═══════════════════════════════════════════════════════════════════════════════
+const HAND_TYPES_DATA=[
+  {id:"single",name:"单张",en:"Single",desc:"大小：大王 > 小王 > 级牌 > A > K…> 2",cards:[{rank:"A",suit:"H"}],isBomb:false},
+  {id:"pair",name:"对子",en:"Pair",desc:"两张相同点数。两大王为最强对子。",cards:[{rank:"K",suit:"H"},{rank:"K",suit:"S"}],isBomb:false},
+  {id:"triple",name:"三张",en:"Triple",desc:"三张相同点数，点数越大越强。",cards:[{rank:"Q",suit:"H"},{rank:"Q",suit:"S"},{rank:"Q",suit:"C"}],isBomb:false},
+  {id:"straight",name:"顺子",en:"Straight 5+",desc:"5张+连续点数，不限花色。级牌可跳接。",cards:[{rank:"5",suit:"S"},{rank:"6",suit:"D"},{rank:"7",suit:"C"},{rank:"8",suit:"H"},{rank:"9",suit:"D"}],isBomb:false},
+  {id:"fullhouse",name:"三带二",en:"Full House",desc:"三张+两张。大小看三张点数。",cards:[{rank:"J",suit:"S"},{rank:"J",suit:"H"},{rank:"J",suit:"C"},{rank:"8",suit:"D"},{rank:"8",suit:"S"}],isBomb:false},
+  {id:"dpair",name:"二连对",en:"Double Pair",desc:"两个相邻点数的对子。",cards:[{rank:"7",suit:"H"},{rank:"7",suit:"C"},{rank:"8",suit:"D"},{rank:"8",suit:"S"}],isBomb:false},
+  {id:"tpair",name:"三连对",en:"Triple Pair",desc:"三个相邻点数的对子，俗称「钢板」。",cards:[{rank:"9",suit:"H"},{rank:"9",suit:"C"},{rank:"10",suit:"S"},{rank:"10",suit:"D"},{rank:"J",suit:"C"},{rank:"J",suit:"H"}],isBomb:false},
+  {id:"bomb4",name:"四炸",en:"4-Bomb",desc:"四张同点数，可打任意非炸牌型。",cards:[{rank:"A",suit:"H"},{rank:"A",suit:"S"},{rank:"A",suit:"D"},{rank:"A",suit:"C"}],isBomb:true},
+  {id:"sf",name:"同花顺",en:"Straight Flush",desc:"5张+连续同花色，强于同张数普通炸弹。",cards:[{rank:"7",suit:"H"},{rank:"8",suit:"H"},{rank:"9",suit:"H"},{rank:"10",suit:"H"},{rank:"J",suit:"H"}],isBomb:true},
+  {id:"joker",name:"天王炸",en:"Supreme",desc:"两大王+两小王，全场最强，无敌。",cards:[{rank:"BJ",suit:""},{rank:"BJ",suit:""},{rank:"SJ",suit:""},{rank:"SJ",suit:""}],isBomb:true},
+];
+
+function HandTypes() {
+  const [sel,setSel]=useState(0);
+  const [anim,setAnim]=useState(true);
+  const ht=HAND_TYPES_DATA[sel];
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:16,minHeight:420}}>
+      <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {HAND_TYPES_DATA.map((h,i)=>(
+          <button key={h.id} onClick={()=>{setAnim(false);setSel(i);setTimeout(()=>setAnim(true),50);}}
+            style={{padding:"13px 16px",borderRadius:10,border:sel===i?"2px solid #C0392B":"1px solid rgba(201,168,76,0.2)",
+              background:sel===i?"rgba(192,57,43,0.06)":"white",cursor:"pointer",textAlign:"left",
+              display:"flex",alignItems:"center",gap:9,transition:"all .15s"}}>
+            {h.isBomb&&<span style={{fontSize:11,background:"#C9A84C",color:"white",padding:"2px 7px",borderRadius:10,fontWeight:600}}>炸</span>}
+            <span style={{fontFamily:"'Noto Serif SC',serif",fontSize:17,fontWeight:sel===i?700:400,color:sel===i?"#C0392B":"#1A1410"}}>{h.name}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{background:ht.isBomb?"linear-gradient(135deg,#fff8e1,white)":"white",
+        border:`1px solid ${ht.isBomb?"rgba(201,168,76,0.4)":"rgba(201,168,76,0.2)"}`,borderRadius:20,padding:40,
+        display:"flex",flexDirection:"column",gap:28}}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:12,flexWrap:"wrap"}}>
+            <span style={{fontFamily:"'Noto Serif SC',serif",fontSize:32,fontWeight:700}}>{ht.name}</span>
+            <span style={{fontSize:15,color:"#7A6E64"}}>{ht.en}</span>
+            {ht.isBomb&&<span style={{fontSize:12,background:"#C9A84C",color:"white",padding:"4px 14px",borderRadius:20,fontWeight:600}}>炸弹</span>}
+          </div>
+          <p style={{fontSize:16,color:"#7A6E64",lineHeight:1.8}}>{ht.desc}</p>
+        </div>
+        <div>
+          <div style={{fontSize:11,letterSpacing:2,color:"#C9A84C",marginBottom:16}}>示例牌组</div>
+          {anim&&<CardRow cards={ht.cards} gap={10}/>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 3: 组牌练习
+// ═══════════════════════════════════════════════════════════════════════════════
+function HandBuilder() {
+  const [hand,setHand]=useState([]);
+  const [sel,setSel]=useState([]);
+  const [result,setResult]=useState(null);
+  const [shake,setShake]=useState(false);
+  const [history,setHistory]=useState([]);
+
+  const deal=useCallback(()=>{
+    setHand(dealPractice());setSel([]);setResult(null);
+  },[]);
+  useEffect(()=>{deal();},[]);
+
+  const toggle=i=>{setSel(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i]);setResult(null);};
+  const check=()=>{
+    const chosen=sel.map(i=>hand[i]);
+    const r=detectHand(chosen);
+    if(r){setResult({ok:true,...r});setHistory(h=>[{cards:chosen,...r},...h.slice(0,4)]);}
+    else{setResult({ok:false});setShake(true);setTimeout(()=>setShake(false),500);}
+  };
+
+  return (
+    <div style={{background:"white",border:"1px solid rgba(201,168,76,0.25)",borderRadius:16,padding:28}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
+        <div>
+          <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:18,fontWeight:700}}>🃏 组牌练习</div>
+          <div style={{fontSize:13,color:"#7A6E64",marginTop:3}}>点击选牌 → 点击「识别牌型」，看看你出的是什么</div>
+        </div>
+        <button onClick={deal} style={{padding:"8px 18px",background:"#1A1410",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>重新发牌 🔀</button>
+      </div>
+      <div style={{background:"#FAF6EE",borderRadius:12,padding:"20px 16px",marginBottom:16}}>
+        <div style={{fontSize:11,color:"#C9A84C",letterSpacing:2,marginBottom:14}}>你的手牌（点击选择）</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
+          {hand.map((c,i)=><Card key={i} {...c} selected={sel.includes(i)} onClick={()=>toggle(i)}/>)}
+        </div>
+      </div>
+      <div style={{minHeight:40,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:16}}>
+        {sel.length>0
+          ? (<><span style={{fontSize:12,color:"#7A6E64"}}>已选 {sel.length} 张：</span>
+              {[...sel].sort((a,b)=>a-b).map(i=><Card key={i} {...hand[i]} small onClick={()=>toggle(i)}/>)}</>)
+          : <span style={{fontSize:13,color:"rgba(0,0,0,0.2)"}}>请点击上方牌张进行选择…</span>}
+      </div>
+      <div style={{display:"flex",gap:10,marginBottom:result?16:0}}>
+        <button onClick={check} disabled={sel.length===0}
+          style={{padding:"10px 24px",background:sel.length?"#C0392B":"#ddd",color:"white",border:"none",borderRadius:8,cursor:sel.length?"pointer":"not-allowed",fontSize:14,fontWeight:600}}>
+          识别牌型
+        </button>
+        {sel.length>0&&<button onClick={()=>{setSel([]);setResult(null);}} style={{padding:"10px 16px",background:"white",border:"1px solid #ddd",borderRadius:8,cursor:"pointer",fontSize:13,color:"#7A6E64"}}>清除</button>}
+      </div>
+      {result&&(
+        <div style={{padding:"14px 20px",borderRadius:10,marginTop:4,
+          background:result.ok?(result.isBomb?"linear-gradient(135deg,#fff8e1,#fffde0)":"rgba(26,107,60,0.06)"):"rgba(192,57,43,0.06)",
+          border:`1.5px solid ${result.ok?(result.isBomb?"rgba(201,168,76,0.5)":"rgba(26,107,60,0.3)"):"rgba(192,57,43,0.3)"}`,
+          animation:shake?"shake .4s ease":result.ok?"popIn .3s ease":"none"}}>
+          {result.ok
+            ? <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:24}}>{result.isBomb?"💥":"✅"}</span>
+                <div>
+                  <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:18,fontWeight:700,color:result.isBomb?"#C9A84C":"#1A6B3C"}}>{result.name}</div>
+                  {result.isBomb&&<div style={{fontSize:12,color:"#C9A84C",marginTop:2}}>炸弹！可以打任意普通牌型</div>}
+                </div>
+              </div>
+            : <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:24}}>❌</span>
+                <div style={{fontSize:14,color:"#C0392B"}}>这 {sel.length} 张牌不构成合法牌型</div>
+              </div>}
+        </div>
+      )}
+      {history.length>0&&(
+        <div style={{marginTop:20,borderTop:"1px solid #f0e8d8",paddingTop:16}}>
+          <div style={{fontSize:11,color:"#C9A84C",letterSpacing:2,marginBottom:10}}>本次识别记录</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {history.map((h,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:10,opacity:1-i*0.18}}>
+                <Pill bomb={h.isBomb}>{h.name}</Pill>
+                <CardRow cards={h.cards} small gap={4}/>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 4: 速度挑战
+// ═══════════════════════════════════════════════════════════════════════════════
+const SPEED_ROUNDS=[
+  {a:[{rank:"K",suit:"H"},{rank:"K",suit:"S"}],b:[{rank:"Q",suit:"D"},{rank:"Q",suit:"C"}],winner:"a",hint:"对K > 对Q"},
+  {a:[{rank:"A",suit:"H"},{rank:"2",suit:"S"},{rank:"3",suit:"C"},{rank:"4",suit:"D"},{rank:"5",suit:"H"}],b:[{rank:"3",suit:"H"},{rank:"4",suit:"S"},{rank:"5",suit:"C"},{rank:"6",suit:"D"},{rank:"7",suit:"H"}],winner:"b",hint:"最大牌7>5，后者更大"},
+  {a:[{rank:"A",suit:"H"},{rank:"A",suit:"S"},{rank:"A",suit:"D"},{rank:"A",suit:"C"}],b:[{rank:"K",suit:"H"},{rank:"K",suit:"S"},{rank:"K",suit:"D"},{rank:"K",suit:"C"},{rank:"K",suit:"H"}],winner:"b",hint:"五炸 > 四炸，张数多的炸弹更大"},
+  {a:[{rank:"7",suit:"H"},{rank:"8",suit:"H"},{rank:"9",suit:"H"},{rank:"10",suit:"H"},{rank:"J",suit:"H"}],b:[{rank:"A",suit:"H"},{rank:"A",suit:"S"},{rank:"A",suit:"D"},{rank:"A",suit:"C"}],winner:"a",hint:"同花顺炸弹 > 普通四炸"},
+  {a:[{rank:"BJ",suit:""},{rank:"BJ",suit:""},{rank:"SJ",suit:""},{rank:"SJ",suit:""}],b:[{rank:"A",suit:"H"},{rank:"A",suit:"S"},{rank:"A",suit:"D"},{rank:"A",suit:"C"},{rank:"A",suit:"H"},{rank:"A",suit:"S"}],winner:"a",hint:"天王炸是全场最强"},
+  {a:[{rank:"J",suit:"H"},{rank:"J",suit:"S"}],b:[{rank:"Q",suit:"D"},{rank:"Q",suit:"C"}],winner:"b",hint:"对Q > 对J"},
+  {a:[{rank:"5",suit:"H"},{rank:"6",suit:"S"},{rank:"7",suit:"C"},{rank:"8",suit:"D"},{rank:"9",suit:"H"},{rank:"10",suit:"S"}],b:[{rank:"4",suit:"H"},{rank:"5",suit:"S"},{rank:"6",suit:"C"},{rank:"7",suit:"D"},{rank:"8",suit:"H"},{rank:"9",suit:"S"}],winner:"a",hint:"最大牌10>9，前者更大"},
+];
+
+function SpeedChallenge() {
+  const [idx,setIdx]=useState(0);
+  const [score,setScore]=useState(0);
+  const [streak,setStreak]=useState(0);
+  const [best,setBest]=useState(0);
+  const [feedback,setFeedback]=useState(null);
+  const [timeLeft,setTimeLeft]=useState(8);
+  const [running,setRunning]=useState(false);
+  const [done,setDone]=useState(false);
+  const timerRef=useRef(null);
+  const round=SPEED_ROUNDS[idx%SPEED_ROUNDS.length];
+  const start=()=>{setRunning(true);setTimeLeft(8);setFeedback(null);};
+  useEffect(()=>{
+    if(!running) return;
+    if(timeLeft<=0){handlePick(null);return;}
+    timerRef.current=setTimeout(()=>setTimeLeft(t=>t-1),1000);
+    return()=>clearTimeout(timerRef.current);
+  },[running,timeLeft]);
+  const handlePick=pick=>{
+    if(feedback) return;
+    clearTimeout(timerRef.current);setRunning(false);
+    const correct=pick===round.winner;
+    const ns=correct?streak+1:0;
+    setFeedback({correct,hint:round.hint,pick,timedOut:pick===null});
+    setStreak(ns);setScore(s=>correct?s+1+(streak>=2?1:0):s);
+    if(ns>best)setBest(ns);
+  };
+  const next=()=>{
+    if(idx+1>=SPEED_ROUNDS.length){setDone(true);return;}
+    setIdx(i=>i+1);setFeedback(null);setTimeLeft(8);setRunning(false);
+  };
+  const reset=()=>{setIdx(0);setScore(0);setStreak(0);setFeedback(null);setTimeLeft(8);setRunning(false);setDone(false);};
+
+  if(done) return (
+    <div style={{background:"white",border:"1px solid rgba(201,168,76,0.25)",borderRadius:16,padding:40,textAlign:"center"}}>
+      <div style={{fontSize:52,marginBottom:12}}>{score>=6?"🏆":score>=4?"🎯":"📚"}</div>
+      <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:24,fontWeight:700,marginBottom:8}}>{score}/{SPEED_ROUNDS.length} 题正确</div>
+      <div style={{color:"#7A6E64",marginBottom:8}}>最长连胜：{best} 连</div>
+      <div style={{color:"#7A6E64",marginBottom:28,fontSize:14}}>{score>=6?"已掌握炸弹和牌型的大小关系！":score>=4?"不错，再练练就能迅速判断牌力！":"多打几局就会有感觉，继续加油！"}</div>
+      <button onClick={reset} style={{padding:"12px 32px",background:"#C0392B",color:"white",border:"none",borderRadius:8,fontSize:15,fontWeight:600,cursor:"pointer"}}>再来一轮</button>
+    </div>
+  );
+
+  const handBox=(side,hand)=>(
+    <div onClick={running?()=>handlePick(side):undefined}
+      style={{background:feedback?(feedback.pick===side?(feedback.correct?"rgba(26,107,60,0.08)":"rgba(192,57,43,0.08)"):(round.winner===side?"rgba(201,168,76,0.12)":"white")):"rgba(250,246,238,0.8)",
+        border:feedback?(feedback.pick===side?(feedback.correct?"2px solid rgba(26,107,60,0.4)":"2px solid rgba(192,57,43,0.4)"):(round.winner===side?"2px solid rgba(201,168,76,0.5)":"1px solid #eee")):(running?"2px solid rgba(201,168,76,0.3)":"1px solid rgba(201,168,76,0.2)"),
+        borderRadius:12,padding:16,cursor:running?"pointer":"default",transition:"all .2s"}}>
+      <div style={{fontSize:10,color:"#C9A84C",letterSpacing:2,marginBottom:10}}>手牌 {side.toUpperCase()}</div>
+      <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{hand.map((c,i)=><Card key={i} {...c} small/>)}</div>
+      {feedback&&round.winner===side&&<div style={{marginTop:8,fontSize:11,color:"#8B6914",fontWeight:600}}>✓ 更大</div>}
+    </div>
+  );
+
+  return (
+    <div style={{background:"white",border:"1px solid rgba(201,168,76,0.25)",borderRadius:16,padding:28}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:18,fontWeight:700}}>⚡ 哪个更大？</div>
+          <div style={{fontSize:13,color:"#7A6E64",marginTop:3}}>快速判断哪手牌能赢，连胜有加分！</div>
+        </div>
+        <div style={{display:"flex",gap:16,alignItems:"center"}}>
+          <span style={{fontSize:12,color:"#7A6E64"}}>🔥 连胜 <strong style={{color:"#C0392B"}}>{streak}</strong></span>
+          <span style={{fontSize:12,color:"#7A6E64"}}>得分 <strong style={{color:"#1A6B3C"}}>{score}</strong></span>
+          <span style={{fontSize:11,color:"#C9A84C"}}>第 {idx+1}/{SPEED_ROUNDS.length} 题</span>
+        </div>
+      </div>
+      {running&&(
+        <div style={{height:4,background:"#f0e8d8",borderRadius:2,marginBottom:20,overflow:"hidden"}}>
+          <div style={{height:"100%",background:timeLeft<=3?"#C0392B":"#C9A84C",width:`${(timeLeft/8)*100}%`,transition:"width 1s linear",borderRadius:2}}/>
+        </div>
+      )}
+      <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:12,alignItems:"center",marginBottom:20}}>
+        {handBox("a",round.a)}
+        <div style={{textAlign:"center"}}>
+          {running
+            ? <div style={{width:44,height:44,borderRadius:"50%",background:timeLeft<=3?"#C0392B":"#1A1410",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Noto Serif SC',serif",fontSize:18,fontWeight:700,margin:"0 auto",transition:"background .3s"}}>{timeLeft}</div>
+            : <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:14,fontWeight:700,color:"#7A6E64"}}>VS</div>}
+        </div>
+        {handBox("b",round.b)}
+      </div>
+      {feedback&&(
+        <div style={{padding:"12px 16px",borderRadius:10,marginBottom:16,
+          background:feedback.correct?"rgba(26,107,60,0.06)":feedback.timedOut?"rgba(201,168,76,0.08)":"rgba(192,57,43,0.06)",
+          border:`1px solid ${feedback.correct?"rgba(26,107,60,0.3)":feedback.timedOut?"rgba(201,168,76,0.3)":"rgba(192,57,43,0.3)"}`,animation:"popIn .3s ease"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>{feedback.correct?"✅":feedback.timedOut?"⏰":"❌"}</span>
+            <div>
+              <div style={{fontWeight:600,fontSize:14,color:feedback.correct?"#1A6B3C":feedback.timedOut?"#8B6914":"#C0392B"}}>
+                {feedback.correct?"答对了！"+(streak>=3?" 🔥连胜"+streak:""):feedback.timedOut?"时间到！":"答错了"}
+              </div>
+              <div style={{fontSize:12,color:"#7A6E64",marginTop:2}}>{feedback.hint}</div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{display:"flex",gap:10}}>
+        {!running&&!feedback&&<button onClick={start} style={{padding:"10px 28px",background:"#C0392B",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontWeight:600}}>开始计时 ⚡</button>}
+        {feedback&&<button onClick={next} style={{padding:"10px 28px",background:"#1A1410",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontWeight:600}}>{idx+1>=SPEED_ROUNDS.length?"查看结果":"下一题 →"}</button>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 5: 模拟对局（脚本式）
+// ═══════════════════════════════════════════════════════════════════════════════
+const MATCH_SCRIPT=[
+  {player:"you",prompt:"你先出牌，选 1-5 张组合：",options:[
+    {cards:[{rank:"A",suit:"H"},{rank:"A",suit:"S"}],label:"出对A（压制力强）",hand:"对子",good:true},
+    {cards:[{rank:"3",suit:"C"}],label:"出单3（清理小牌）",hand:"单张",good:true},
+    {cards:[{rank:"7",suit:"D"},{rank:"8",suit:"S"},{rank:"9",suit:"H"},{rank:"10",suit:"C"},{rank:"J",suit:"H"}],label:"出7-J顺子（清5张）",hand:"顺子",good:true},
+  ]},
+  {player:"left",auto:{cards:[{rank:"K",suit:"C"},{rank:"K",suit:"H"}],label:"对手出对K",hand:"对子"}},
+  {player:"you",prompt:"对手出了对K，你怎么应对？",options:[
+    {cards:[{rank:"A",suit:"H"},{rank:"A",suit:"S"}],label:"压对A",hand:"对子",good:true},
+    {cards:[{rank:"5",suit:"H"}],label:"出单5（牌型不对！）",hand:null,good:false,passMsg:"牌型不同，不能用单张跟对子，应该 Pass！"},
+    {cards:[{rank:"Q",suit:"S"},{rank:"Q",suit:"H"},{rank:"Q",suit:"D"},{rank:"Q",suit:"C"}],label:"打四炸Q",hand:"4张炸弹",good:true,bombMsg:"用炸弹截断对手控制权！"},
+  ]},
+  {player:"partner",auto:{cards:[{rank:"5",suit:"H"},{rank:"6",suit:"D"},{rank:"7",suit:"C"},{rank:"8",suit:"S"},{rank:"9",suit:"H"}],label:"队友出5-9顺子",hand:"顺子"}},
+  {player:"you",prompt:"队友拿到控制权出了顺子，你是否用炸弹？",options:[
+    {cards:[],label:"Pass，不打断队友",hand:null,good:true,passMsg:"✓ 队友已控制，不打断是正确选择！"},
+    {cards:[{rank:"Q",suit:"S"},{rank:"Q",suit:"H"},{rank:"Q",suit:"D"},{rank:"Q",suit:"C"}],label:"打炸弹Q（打断队友！）",hand:"4张炸弹",good:false,bombMsg:"❌ 不应该打断队友的控制权！"},
+  ]},
+];
+const SIM_COLORS={you:"#C0392B",left:"#1A3A6B",right:"#1A6B3C",partner:"#8B6914"};
+const SIM_NAMES={you:"你",left:"对手（左）",right:"对手（右）",partner:"队友"};
+
+function SimMatch() {
+  const [step,setStep]=useState(0);
+  const [log,setLog]=useState([]);
+  const [picked,setPicked]=useState(null);
+  const [finished,setFinished]=useState(false);
+  const [goodChoices,setGoodChoices]=useState(0);
+  const cur=MATCH_SCRIPT[step];
+  useEffect(()=>{
+    if(cur?.player!=="you"&&cur?.auto){
+      const a=cur.auto;
+      const t=setTimeout(()=>{
+        setLog(l=>[...l,{player:cur.player,cards:a.cards,hand:a.hand,label:a.label,auto:true}]);
+        if(step+1>=MATCH_SCRIPT.length)setFinished(true);
+        else setStep(s=>s+1);
+      },1200);
+      return()=>clearTimeout(t);
+    }
+  },[step]);
+  const pick=opt=>{
+    if(picked!=null) return;
+    setPicked(opt);
+    if(opt.good)setGoodChoices(g=>g+1);
+    setLog(l=>[...l,{player:"you",cards:opt.cards,hand:opt.hand||"Pass",label:opt.label,msg:opt.passMsg||opt.bombMsg||null,good:opt.good}]);
+  };
+  const next=()=>{setPicked(null);if(step+1>=MATCH_SCRIPT.length)setFinished(true);else setStep(s=>s+1);};
+  const reset=()=>{setStep(0);setLog([]);setPicked(null);setFinished(false);setGoodChoices(0);};
+
+  return (
+    <div style={{background:"white",border:"1px solid rgba(201,168,76,0.25)",borderRadius:16,overflow:"hidden"}}>
+      <div style={{padding:"18px 24px",borderBottom:"1px solid #f0e8d8",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:18,fontWeight:700}}>🎭 模拟对局</div>
+          <div style={{fontSize:13,color:"#7A6E64",marginTop:3}}>脚本式决策训练，体验配合与对抗</div>
+        </div>
+        <button onClick={reset} style={{padding:"7px 14px",background:"#f5f0e8",border:"none",borderRadius:8,cursor:"pointer",fontSize:12,color:"#7A6E64"}}>重置</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:0}}>
+        <div style={{background:"#FAF6EE",borderRight:"1px solid #f0e8d8",padding:14}}>
+          <div style={{fontSize:10,letterSpacing:2,color:"#C9A84C",marginBottom:10}}>牌桌座位</div>
+          {Object.entries(SIM_NAMES).map(([k,name])=>(
+            <div key={k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"5px 7px",borderRadius:7,
+              background:cur?.player===k&&!finished?"rgba(192,57,43,0.06)":"transparent",
+              border:cur?.player===k&&!finished?"1px solid rgba(192,57,43,0.2)":"1px solid transparent"}}>
+              <div style={{width:26,height:26,borderRadius:"50%",background:SIM_COLORS[k],color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{name[0]}</div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600}}>{name}</div>
+                <div style={{fontSize:9,color:k==="you"||k==="partner"?"#C0392B":"#1A3A6B"}}>{k==="you"||k==="partner"?"红队":"蓝队"}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{padding:18}}>
+          <div style={{maxHeight:180,overflowY:"auto",display:"flex",flexDirection:"column",gap:8,marginBottom:14}}>
+            {log.map((entry,i)=>(
+              <div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",animation:"slideIn .3s ease"}}>
+                <div style={{width:20,height:20,borderRadius:"50%",background:SIM_COLORS[entry.player],color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,flexShrink:0,marginTop:1}}>{SIM_NAMES[entry.player][0]}</div>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:600,color:SIM_COLORS[entry.player]}}>{SIM_NAMES[entry.player]}</span>
+                    <span style={{fontSize:10,color:"#7A6E64"}}>{entry.label}</span>
+                    {entry.hand&&entry.hand!=="Pass"&&<Pill bomb={entry.isBomb}>{entry.hand}</Pill>}
+                  </div>
+                  {entry.cards?.length>0&&<div style={{display:"flex",gap:3,marginTop:4,flexWrap:"wrap"}}>{entry.cards.map((c,j)=><Card key={j} {...c} small/>)}</div>}
+                  {entry.msg&&<div style={{marginTop:3,fontSize:11,color:entry.good?"#1A6B3C":"#C0392B",fontStyle:"italic"}}>{entry.msg}</div>}
+                </div>
+              </div>
+            ))}
+            {log.length===0&&<div style={{fontSize:13,color:"rgba(0,0,0,0.2)",textAlign:"center",padding:"16px 0"}}>等待出牌…</div>}
+          </div>
+          {!finished&&cur?.player==="you"&&!picked&&(
+            <div style={{borderTop:"1px solid #f0e8d8",paddingTop:14}}>
+              <div style={{fontSize:13,fontWeight:600,marginBottom:10,color:"#1A1410"}}>{cur.prompt}</div>
+              <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                {cur.options.map((opt,i)=>(
+                  <button key={i} onClick={()=>pick(opt)}
+                    style={{padding:"9px 12px",borderRadius:9,border:"1px solid rgba(201,168,76,0.25)",background:"white",cursor:"pointer",textAlign:"left",transition:"all .15s",display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{display:"flex",gap:3,flexShrink:0}}>
+                      {opt.cards.slice(0,5).map((c,j)=><Card key={j} {...c} small/>)}
+                      {opt.cards.length===0&&<span style={{fontSize:18}}>🙅</span>}
+                    </div>
+                    <span style={{fontSize:13,color:"#1A1410"}}>{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {!finished&&cur?.player!=="you"&&(
+            <div style={{borderTop:"1px solid #f0e8d8",paddingTop:14,display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:18,height:18,borderRadius:"50%",border:"2px solid #C9A84C",borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>
+              <span style={{fontSize:13,color:"#7A6E64"}}>{SIM_NAMES[cur.player]} 正在出牌…</span>
+            </div>
+          )}
+          {!finished&&picked&&(
+            <div style={{borderTop:"1px solid #f0e8d8",paddingTop:14}}>
+              <div style={{padding:"9px 12px",borderRadius:9,marginBottom:10,background:picked.good?"rgba(26,107,60,0.06)":"rgba(192,57,43,0.06)",border:`1px solid ${picked.good?"rgba(26,107,60,0.25)":"rgba(192,57,43,0.25)"}`}}>
+                <span style={{fontSize:13,color:picked.good?"#1A6B3C":"#C0392B",fontWeight:600}}>{picked.good?"✅ 好的决策！":"⚠️ 这个选择不太好"}</span>
+              </div>
+              <button onClick={next} style={{padding:"9px 22px",background:"#1A1410",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>继续 →</button>
+            </div>
+          )}
+          {finished&&(
+            <div style={{borderTop:"1px solid #f0e8d8",paddingTop:14,textAlign:"center"}}>
+              <div style={{fontSize:32,marginBottom:8}}>{goodChoices>=3?"🏆":goodChoices>=2?"👏":"📚"}</div>
+              <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:17,fontWeight:700,marginBottom:6}}>模拟对局结束</div>
+              <div style={{fontSize:13,color:"#7A6E64",marginBottom:14}}>{goodChoices}/3 次决策正确 · {goodChoices>=3?"出色！":"再练练配合逻辑吧"}</div>
+              <button onClick={reset} style={{padding:"9px 22px",background:"#C0392B",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>再来一局</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 6: 真实四人对局
+// ═══════════════════════════════════════════════════════════════════════════════
+const PNAMES=["你","对手甲","队友","对手乙"];
+const PCOLOR=["#C0392B","#1A3A6B","#C0392B","#1A3A6B"];
+
+function GuandanGame() {
+  const [game,setGame]=useState(null);
+  const [sel,setSel]=useState([]);
+  const [err,setErr]=useState("");
+  const [aiAnim,setAiAnim]=useState(null);
+  const logRef=useRef(null);
+
+  const startGame=()=>{
+    setGame({hands:dealCards(),cur:0,table:null,passes:0,done:[],log:[],phase:"playing",leader:0});
+    setSel([]);setErr("");
+  };
+
+  useEffect(()=>{
+    if(!game||game.phase!=="playing"||game.cur===0) return;
+    const player=game.cur;
+    if(game.done.includes(player)){setGame(g=>g?{...g,cur:nextActive(g,player)}:g);return;}
+    setAiAnim(player);
+    const t=setTimeout(()=>{
+      setGame(g=>{
+        if(!g||g.phase!=="playing"||g.cur!==player) return g;
+        const aiPlay=aiDecide(g.hands[player],g.table,player);
+        if(!aiPlay) return applyPass(g,player);
+        return applyPlay(g,player,aiPlay);
+      });
+      setAiAnim(null);
+    },1000);
+    return()=>{clearTimeout(t);setAiAnim(null);};
+  },[game?.cur,game?.phase]);
+
+  useEffect(()=>{if(logRef.current)logRef.current.scrollTop=0;},[game?.log?.length]);
+
+  const toggleCard=i=>{setSel(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i]);setErr("");};
+
+  const handlePlay=()=>{
+    if(!game||sel.length===0){setErr("请先选择要出的牌");return;}
+    const chosen=sel.map(i=>game.hands[0][i]);
+    const result=detectHand(chosen);
+    if(!result){setErr("所选牌不构成合法牌型");return;}
+    if(game.table&&TEAM[game.table.owner]!==TEAM[0]&&!canBeat(result,game.table)){
+      setErr(`出牌无法压住「${game.table.name}」，请换牌或 Pass`);return;
+    }
+    setGame(g=>g?applyPlay(g,0,{cards:chosen,...result}):g);
+    setSel([]);setErr("");
+  };
+
+  const handlePass=()=>{
+    if(!game) return;
+    if(!game.table||game.leader===0){setErr("你是首出，必须出牌");return;}
+    setGame(g=>g?applyPass(g,0):g);
+    setSel([]);setErr("");
+  };
+
+  // Idle
+  if(!game||(!game.phase==="playing"&&!game.phase==="done")) return (
+    <div style={{textAlign:"center",padding:"48px 24px",background:"white",border:"1px solid rgba(201,168,76,0.2)",borderRadius:16}}>
+      <div style={{fontSize:52,marginBottom:16}}>🀄</div>
+      <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:22,fontWeight:700,marginBottom:10}}>四人掼蛋对局</div>
+      <div style={{fontSize:14,color:"#7A6E64",marginBottom:32,lineHeight:1.8}}>你（红队）+ 队友 vs 对手甲 + 对手乙<br/>当前等级：<strong style={{color:"#C0392B"}}>2 级</strong>，每人发 27 张牌</div>
+      <button onClick={startGame} style={{padding:"14px 40px",background:"#C0392B",color:"white",border:"none",borderRadius:10,fontSize:16,fontWeight:700,cursor:"pointer",fontFamily:"'Noto Serif SC',serif",boxShadow:"0 4px 16px rgba(192,57,43,0.35)"}}>开始发牌</button>
+    </div>
+  );
+
+  // Done
+  if(game.phase==="done"){
+    const order=game.done;
+    const myRank=order.indexOf(0);
+    const partnerRank=order.indexOf(2);
+    const teamWon=myRank<=1||partnerRank<=1;
+    const upgradeText=(order[0]===0&&order[1]===2)||(order[0]===2&&order[1]===0)?"升3级 🎉":(order[0]===0||order[0]===2)?"升2级 🎊":"升1级";
+    const rankLabels=["头游 🥇","二游 🥈","三游 🥉","末游 💀"];
+    return (
+      <div style={{background:"white",border:"1px solid rgba(201,168,76,0.2)",borderRadius:16,padding:"32px 24px"}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{fontSize:48,marginBottom:10}}>{teamWon?"🏆":"😔"}</div>
+          <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:22,fontWeight:700,marginBottom:4,color:teamWon?"#C0392B":"#1A3A6B"}}>{teamWon?"红队胜利！":"蓝队胜利"}</div>
+          {teamWon&&<div style={{fontSize:13,color:"#C9A84C",fontWeight:600}}>{upgradeText}</div>}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:10,maxWidth:360,margin:"0 auto 24px"}}>
+          {order.map((p,rank)=>(
+            <div key={p} style={{display:"flex",alignItems:"center",gap:12,background:"white",border:`2px solid ${rank===0?"#C9A84C":"rgba(201,168,76,0.2)"}`,borderRadius:10,padding:"10px 14px"}}>
+              <div style={{width:34,height:34,borderRadius:"50%",background:PCOLOR[p],color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Noto Serif SC',serif",fontSize:13,fontWeight:700}}>{PNAMES[p][0]}</div>
+              <div style={{flex:1}}>
+                <div style={{fontFamily:"'Noto Serif SC',serif",fontWeight:600,fontSize:14}}>{PNAMES[p]}</div>
+                <div style={{fontSize:11,color:PCOLOR[p]}}>{TEAM[p]===0?"红队":"蓝队"}</div>
+              </div>
+              <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:13,fontWeight:600,color:rank<=1?"#1A6B3C":"#7A6E64"}}>{rankLabels[rank]}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{textAlign:"center"}}>
+          <button onClick={startGame} style={{padding:"11px 28px",background:"#C0392B",color:"white",border:"none",borderRadius:8,fontSize:14,fontWeight:700,cursor:"pointer",marginRight:10}}>再来一局</button>
+          <button onClick={()=>setGame(null)} style={{padding:"11px 20px",background:"white",border:"1px solid #ddd",borderRadius:8,fontSize:14,cursor:"pointer",color:"#7A6E64"}}>返回</button>
+        </div>
+      </div>
+    );
+  }
+
+  // Playing
+  const myHand=game.hands[0];
+  const chosen=sel.map(i=>myHand[i]);
+  const previewResult=chosen.length>0?detectHand(chosen):null;
+  const canPlayNow=previewResult&&(!game.table||TEAM[game.table.owner]===TEAM[0]||canBeat(previewResult,game.table));
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",background:"#FAF6EE",borderRadius:16,overflow:"hidden",border:"1px solid rgba(201,168,76,0.2)"}}>
+      {/* 状态栏 */}
+      <div style={{background:"#1A1410",padding:"9px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {[1,2,3].map(p=>(
+            <div key={p} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:20,
+              background:game.cur===p?"rgba(201,168,76,0.2)":"transparent",
+              border:game.cur===p?"1px solid rgba(201,168,76,0.4)":"1px solid transparent",
+              opacity:game.done.includes(p)?0.4:1,transition:"all .3s"}}>
+              <div style={{width:20,height:20,borderRadius:"50%",background:game.done.includes(p)?"#555":PCOLOR[p],color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700}}>{game.done.includes(p)?"✓":PNAMES[p][0]}</div>
+              <span style={{fontSize:10,color:"rgba(255,255,255,0.7)",whiteSpace:"nowrap"}}>{PNAMES[p]} {game.done.includes(p)?"(完)":`${game.hands[p].length}张`}</span>
+              {aiAnim===p&&<div style={{width:6,height:6,borderRadius:"50%",background:"#C9A84C",animation:"blink .5s ease-in-out infinite"}}/>}
+            </div>
+          ))}
+        </div>
+        <span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{game.cur===0&&!game.done.includes(0)?"⬇ 轮到你出牌":"等待 AI..."}</span>
+      </div>
+
+      {/* 桌面 + 日志 */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:0,minHeight:240}}>
+        <div style={{padding:"16px",borderRight:"1px solid rgba(201,168,76,0.1)",display:"flex",flexDirection:"column",justifyContent:"center"}}>
+          <div style={{fontSize:10,color:"#C9A84C",letterSpacing:2,marginBottom:12}}>当前桌面</div>
+          {game.table?(
+            <div>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                {game.table.cards.map((c,i)=><Card key={c.id||i} {...c} small/>)}
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                <span style={{fontSize:12,fontFamily:"'Noto Serif SC',serif",fontWeight:600,color:PCOLOR[game.table.owner]}}>{PNAMES[game.table.owner]}</span>
+                <span style={{fontSize:11,color:"#7A6E64"}}>出了</span>
+                <Pill bomb={game.table.isBomb}>{game.table.name}</Pill>
+              </div>
+            </div>
+          ):(
+            <div style={{color:"rgba(0,0,0,0.2)",fontSize:13,display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:22}}>🀄</span><span>{PNAMES[game.leader]} 首出</span>
+            </div>
+          )}
+        </div>
+        <div ref={logRef} style={{padding:"12px 14px",overflowY:"auto",maxHeight:260}}>
+          <div style={{fontSize:10,color:"#C9A84C",letterSpacing:2,marginBottom:10}}>出牌记录</div>
+          {game.log.length===0&&<div style={{fontSize:12,color:"rgba(0,0,0,0.2)"}}>等待第一张牌...</div>}
+          {game.log.map((entry,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"flex-start",gap:7,marginBottom:8,opacity:1-i*0.07,animation:i===0?"slideDown .3s ease":"none"}}>
+              <div style={{width:18,height:18,borderRadius:"50%",background:PCOLOR[entry.player],color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:700,flexShrink:0,marginTop:1}}>{PNAMES[entry.player][0]}</div>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                  <span style={{fontSize:10,fontWeight:600,color:PCOLOR[entry.player]}}>{PNAMES[entry.player]}</span>
+                  {entry.pass?<span style={{fontSize:10,color:"#aaa",fontStyle:"italic"}}>Pass</span>:<Pill bomb={entry.isBomb}>{entry.name}</Pill>}
+                </div>
+                {!entry.pass&&entry.cards.length>0&&(
+                  <div style={{display:"flex",gap:3,marginTop:3,flexWrap:"wrap"}}>
+                    {entry.cards.map((c,j)=><Card key={c.id||j} {...c} small/>)}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 手牌区 */}
+      <div style={{borderTop:"2px solid rgba(201,168,76,0.15)",background:"white",padding:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+          <div>
+            <span style={{fontSize:11,color:"#C9A84C",letterSpacing:2}}>你的手牌</span>
+            <span style={{fontSize:11,color:"#aaa",marginLeft:8}}>({myHand.length}张)</span>
+          </div>
+          {sel.length>0&&(
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              {previewResult
+                ? <span style={{fontSize:11,background:previewResult.isBomb?"rgba(201,168,76,0.15)":"rgba(26,107,60,0.08)",color:previewResult.isBomb?"#8B6914":"#1A6B3C",padding:"3px 10px",borderRadius:10,fontWeight:600,animation:"popIn .2s ease"}}>
+                    {previewResult.name} {canPlayNow?"✓":"✗"}
+                  </span>
+                : <span style={{fontSize:11,color:"#C0392B",padding:"3px 10px"}}>不合法牌型</span>}
+              <button onClick={()=>setSel([])} style={{fontSize:11,color:"#aaa",background:"none",border:"none",cursor:"pointer"}}>清除</button>
+            </div>
+          )}
+        </div>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,minHeight:76}}>
+          {myHand.map((c,i)=>(
+            <Card key={c.id} {...c}
+              selected={sel.includes(i)}
+              dim={sel.length>0&&!sel.includes(i)}
+              onClick={game.cur===0&&!game.done.includes(0)?()=>toggleCard(i):undefined}/>
+          ))}
+          {game.done.includes(0)&&<div style={{color:"rgba(0,0,0,0.3)",fontSize:14,alignSelf:"center"}}>你已出完！</div>}
+        </div>
+        {err&&<div style={{fontSize:12,color:"#C0392B",marginBottom:10,padding:"6px 12px",background:"rgba(192,57,43,0.06)",borderRadius:6,animation:"shake .3s ease"}}>{err}</div>}
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <button onClick={handlePlay}
+            disabled={game.cur!==0||game.done.includes(0)||sel.length===0||!canPlayNow}
+            style={{padding:"10px 28px",background:game.cur===0&&sel.length>0&&canPlayNow?"#C0392B":"#ddd",color:"white",border:"none",borderRadius:8,fontSize:14,fontWeight:700,cursor:game.cur===0&&sel.length>0&&canPlayNow?"pointer":"not-allowed",transition:"background .2s",fontFamily:"'Noto Serif SC',serif"}}>
+            出牌
+          </button>
+          <button onClick={handlePass}
+            disabled={game.cur!==0||game.done.includes(0)||!game.table||game.leader===0}
+            style={{padding:"10px 18px",background:"white",border:"1px solid #ddd",borderRadius:8,fontSize:14,cursor:game.cur===0&&game.table&&game.leader!==0?"pointer":"not-allowed",color:"#7A6E64",opacity:game.cur===0&&game.table&&game.leader!==0?1:0.5}}>
+            不出 / Pass
+          </button>
+          <button onClick={startGame} style={{padding:"10px 14px",background:"none",border:"none",fontSize:12,color:"#aaa",cursor:"pointer",marginLeft:"auto"}}>重新发牌</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HERO + NAV + APP
+// ═══════════════════════════════════════════════════════════════════════════════
+function Hero() {
+  const [t,setT]=useState(0);
+  useEffect(()=>{const id=setInterval(()=>setT(x=>x+1),60);return()=>clearInterval(id);},[]);
+  const y=Math.sin(t*0.02)*10;
+  return (
+    <div style={{minHeight:"100vh",background:"#1A1410",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:"60px 24px",position:"relative",overflow:"hidden"}}>
+      <div style={{position:"absolute",inset:0,background:"radial-gradient(ellipse 80% 60% at 50% 50%,rgba(192,57,43,0.15) 0%,transparent 70%)",pointerEvents:"none"}}/>
+      <div style={{position:"absolute",inset:0,backgroundImage:"repeating-linear-gradient(45deg,transparent,transparent 40px,rgba(201,168,76,0.025) 40px,rgba(201,168,76,0.025) 41px)",pointerEvents:"none"}}/>
+      <div style={{display:"flex",gap:10,marginBottom:48,transform:`translateY(${y}px)`,transition:"transform 0.05s linear"}}>
+        {[{rank:"A",suit:"H"},{rank:"K",suit:"S"},{rank:"BJ",suit:""},{rank:"5",suit:"C"},{rank:"J",suit:"D"}].map((c,i)=>(
+          <div key={i} style={{transform:`rotate(${[-3,-5,0,4,7][i]}deg) translateY(${[0,4,-2,6,0][i]}px)`}}>
+            <Card {...c}/>
+          </div>
+        ))}
+      </div>
+      <div style={{fontSize:11,fontWeight:600,letterSpacing:4,color:"#C9A84C",marginBottom:16,textTransform:"uppercase"}}>中国升级扑克 · 完整互动指南</div>
+      <h1 style={{fontFamily:"'Noto Serif SC',serif",fontSize:"clamp(64px,12vw,108px)",fontWeight:900,color:"white",lineHeight:1,letterSpacing:-2,marginBottom:8}}>
+        掼<span style={{color:"#C9A84C"}}>蛋</span>
+      </h1>
+      <div style={{fontFamily:"Georgia,serif",fontStyle:"italic",fontSize:"clamp(16px,3vw,22px)",color:"rgba(255,255,255,0.45)",marginBottom:48}}>
+        学规则 · 练牌型 · 打真实对局
+      </div>
+      <div style={{display:"flex",gap:32,marginBottom:64,flexWrap:"wrap",justifyContent:"center"}}>
+        {[{n:"📖",l:"规则概览"},{n:"🃏",l:"组牌练习"},{n:"⚡",l:"速度挑战"},{n:"🎭",l:"模拟对局"},{n:"🀄",l:"真实对局"}].map(s=>(
+          <div key={s.n} style={{textAlign:"center"}}>
+            <span style={{fontSize:28,display:"block",marginBottom:4}}>{s.n}</span>
+            <span style={{fontSize:11,color:"rgba(255,255,255,0.4)",letterSpacing:1}}>{s.l}</span>
+          </div>
+        ))}
+      </div>
+      <a href="#overview" style={{textDecoration:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:8,fontSize:11,letterSpacing:2,color:"rgba(255,255,255,0.3)",animation:"pulse 2s ease-in-out infinite"}}>
+        开始
+        <div style={{width:1,height:40,background:"linear-gradient(to bottom,rgba(255,255,255,0.4),transparent)"}}/>
+      </a>
+      <style>{`@keyframes pulse{0%,100%{opacity:.3}50%{opacity:.7}}`}</style>
+    </div>
+  );
+}
+
+function Nav({active}) {
+  const items=[
+    {h:"#overview",l:"概览"},{h:"#hands",l:"牌型"},
+    {h:"#builder",l:"🃏 组牌"},{h:"#speed",l:"⚡ 速度"},
+    {h:"#sim",l:"🎭 模拟"},{h:"#game",l:"🀄 真实对局"},{h:"#tips",l:"策略"},
+  ];
+  return (
+    <nav style={{background:"#1A1410",position:"sticky",top:0,zIndex:100,borderBottom:"1px solid rgba(201,168,76,0.18)"}}>
+      <div style={{maxWidth:1100,margin:"0 auto",display:"flex",overflowX:"auto",scrollbarWidth:"none"}}>
+        {items.map(it=>(
+          <a key={it.h} href={it.h} style={{padding:"15px 20px",fontSize:13,letterSpacing:1,
+            color:active===it.h?"#C9A84C":"rgba(255,255,255,0.4)",textDecoration:"none",whiteSpace:"nowrap",
+            borderBottom:active===it.h?"2px solid #C9A84C":"2px solid transparent",transition:"all .2s",flexShrink:0,
+            background:it.h==="#game"&&active!==it.h?"rgba(201,168,76,0.05)":"transparent"}}>
+            {it.l}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function App() {
+  const [activeNav,setActiveNav]=useState("");
+  useEffect(()=>{
+    const ids=["overview","hands","builder","speed","sim","game","tips"];
+    const obs=new IntersectionObserver(entries=>{
+      entries.forEach(e=>{if(e.isIntersecting)setActiveNav("#"+e.target.id);});
+    },{threshold:0.2});
+    ids.forEach(id=>{const el=document.getElementById(id);if(el)obs.observe(el);});
+    return()=>obs.disconnect();
+  },[]);
+
+  const sec=(id,n,title,sub,children)=>(
+    <section id={id} style={{maxWidth:1100,margin:"0 auto",padding:"88px 32px",borderBottom:"1px solid rgba(201,168,76,0.12)"}}>
+      <SL n={n}/>
+      <h2 style={{fontFamily:"'Noto Serif SC',serif",fontSize:"clamp(30px,4vw,48px)",fontWeight:700,marginBottom:14}}>{title}</h2>
+      {sub&&<p style={{fontSize:18,color:"#7A6E64",maxWidth:680,marginBottom:40,lineHeight:1.8}}>{sub}</p>}
+      {children}
+    </section>
+  );
+
+  return (
+    <div style={{fontFamily:"'Noto Sans SC',Helvetica,sans-serif",background:"#FAF6EE",color:"#1A1410",lineHeight:1.7}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0}
+        html{scroll-behavior:smooth}
+        ::-webkit-scrollbar{display:none}
+        @keyframes popIn{from{transform:scale(0.95);opacity:0}to{transform:scale(1);opacity:1}}
+        @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+        @keyframes slideDown{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+        @keyframes blink{0%,100%{opacity:0.3}50%{opacity:1}}
+        @keyframes spin{to{transform:rotate(360deg)}}
+      `}</style>
+
+      <Hero/>
+      <Nav active={activeNav}/>
+
+      {sec("overview",1,"掼蛋是什么？","掼蛋起源于江苏，4人2队对抗，先打完手牌的队伍升级。级牌（本局为2）高于A，红桃级牌可当万能牌。",<OverviewSection/>)}
+      {sec("hands",2,"牌型一览","点击左侧选择牌型，查看示例与规则说明。",<HandTypes/>)}
+      {sec("builder",3,"组牌练习","发给你10张手牌，点击任意张数，系统自动识别牌型。",<HandBuilder/>)}
+      {sec("speed",4,"哪个更大？","两手牌同时出现，在倒计时内点击更大的那一手。连胜有加分！",<SpeedChallenge/>)}
+      {sec("sim",5,"模拟对局","脚本式决策训练：体验关键出牌时刻，学会配合与对抗。",<SimMatch/>)}
+      {sec("game",6,"真实四人对局","你（红队）+ 队友 vs 两位对手。点击手牌选择，点「出牌」提交，AI 约1秒响应。",<GuandanGame/>)}
+      {sec("tips",7,"新手策略",null,
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))",gap:14}}>
+          {[
+            {icon:"🤝",t:"配合队友",d:"队友控制时不要打断，观察出牌信号再决策"},
+            {icon:"💣",t:"炸弹留关键",d:"拦截对手快出完时打炸弹效果最大"},
+            {icon:"🃏",t:"逢人配珍贵",d:"红桃级牌优先保留，不要随意单出消耗"},
+            {icon:"🔢",t:"规划散牌",d:"开局就规划哪些散牌先单出清掉"},
+            {icon:"👁️",t:"读懂信号",d:"队友出牌顺序暗示手牌结构，多观察少强出"},
+            {icon:"📋",t:"底牌策略",d:"赢局换底牌时把大牌留给自己"},
+          ].map((t,i)=>(
+            <div key={i} style={{background:"white",borderLeft:"3px solid #C0392B",padding:18,borderRadius:"0 10px 10px 0",boxShadow:"0 2px 8px rgba(0,0,0,0.04)",transition:"transform .2s"}}
+              onMouseEnter={e=>e.currentTarget.style.transform="translateX(4px)"}
+              onMouseLeave={e=>e.currentTarget.style.transform=""}>
+              <div style={{fontSize:22,marginBottom:8}}>{t.icon}</div>
+              <div style={{fontFamily:"'Noto Serif SC',serif",fontWeight:600,fontSize:14,marginBottom:5}}>{t.t}</div>
+              <div style={{fontSize:12,color:"#7A6E64",lineHeight:1.6}}>{t.d}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <footer style={{background:"#1A1410",color:"rgba(255,255,255,0.3)",textAlign:"center",padding:"40px 24px"}}>
+        <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:20,color:"#C9A84C",marginBottom:8}}>掼蛋指南</div>
+        <div style={{fontSize:12,letterSpacing:1}}>视觉化互动入门指南 · 规则以江苏通行版本为准</div>
+        <div style={{marginTop:10,fontSize:11,opacity:0.4}}>祝牌运亨通 🀄</div>
+      </footer>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
